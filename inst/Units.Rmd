@@ -1,0 +1,69 @@
+---
+title: "Unit Conversion"
+author: "Mark Hagemann"
+date: "May 17, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+***This document is no longer valid, as I have changed my mind as to best practices after some experimentation. Updates to come.***
+
+Herein I document the complications and my conclusions regarding unit conversion, specifically in the context of hydrology/water-quality data, such as that provided in the Water Quality Portal (WQP).
+
+## Non-standard units
+
+
+One issue that arises when relying on a general-purpose unit conversion platform (like [udunits](http://www.unidata.ucar.edu/software/udunits/)) is that it may be too rigid and therefore not comprehensive for a specific application. Units are often context-dependent. For example, when dealing with concentration data in natural waters, parts per billion (ppb) is a perfectly acceptable unit for our intents and purposes, even though it is technically a ratio (part / billion parts, i.e. unitless) and not concentration (mass per volume). Meanwhile, we seldom want ppb data to be converted to percent data, even though this is technically possible. Percent data often represent things like the volatile fraction of organic matter, which is not a concentration as it ignores the water matrix altogether. Other units are not recognized, either because they do not correspond to physical quantities (e.g. "natural turbidity units") or because they are improperly denoted ("CFS" instead of "ft3/s").
+
+On the other hand, udunits is extraordinarily capable. For example all of the following work:
+
+```{r}
+ud.is.parseable("acre-feet")
+ud.is.parseable("acre*feet")
+ud.is.parseable("acrefeet")
+ud.is.parseable("acre feet")
+ud.is.parseable("acre foot")
+```
+
+Unfortunately, "acre-foots" does not work :)
+
+
+### Issue: implementing udunits conversion in water-quality context
+
+When applying unit conversions to real water-quality data, I am faced with the problem of how to treat conversions that udunits doesn't recognize. Several options are:
+
+1. Return NA, report the unit I attempted to convert to, issue warning.
+2. Return NA, report the original units, issue warning.
+3. Return original value and original units, issue warning
+4. Throw error. 
+
+1 is useful for doing batch conversion when I expect everything to have uniform units before going to the next step of analysis. I can't imagine when 2 would be more useful than 3. 3 would be useful if I'm overwriting the original data, but probably not otherwise. 4 is safest, but probably too much so. This may be useful when conversion is critical and I can't be bothered to pay attention to warnings.
+
+### My solution
+
+I wrote a function, `convertUnits` that is a context-specific wrapper for functions in the udunits2 package. It implements the following ideas:
+
+When dealing with units that the converter does not recognize, it is importatnt to distinguish between two categories: units that are correct for my purposes but that might not be entirely proper (e.g. "CFS"), and units that are incorrect--either because they were input improperly or because the conversion is not a proper one. 
+
+Since the first category is tractably small, `convertUnits` uses a helper function, `validateUnits`, to do some manually specified pre-conversions so as to keep kosher with udunits2. For example, "CFS" and "cfs" are converted to "ft3/s".
+
+When attempting to convert between units that are not recognized by the converter *after* pre-conversion, it is best to issue a warning and return `NA` along with the attempted conversion units. For example, attempting to convert the following:
+
+```{r}
+unitExample <- data.frame(value = runif(5), 
+                          units = c("mg/L", "CFS", "NTU", "ppb", "widgets"),
+                          stringsAsFactors = FALSE)
+```
+
+to the following units: `r c("kg/m3", "L/day", "ntu", "ppm", "gadgets")` yields the following:
+
+```{r}
+convertUnits(x = unitExample$value, unitExample$units, 
+             to = c("kg/m3", "L/day", "ntu", "NTU", "ppm", "gadgets"))
+```
+
+Two of the 5 entries converted as expected and with no ambiguitiy: mg/L to kg/m3 and ppb to ppm. CFS converted just fine to l/day because internally it was first changed to "ft3/s" before making the conversion. NTU "converted" to ntu without issue because the function recognized these as the same thing (using `tolower`) and no conversion was performed (i.e. no call was made to `ud.convert`). Finally, the one meaningless conversion, "widgets" to "gadgets" returned NA, as desired.

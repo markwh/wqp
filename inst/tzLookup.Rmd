@@ -1,0 +1,153 @@
+---
+title: "tzLookup"
+author: "Mark Hagemann"
+date: "May 26, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+I'm implementing a timezone lookup for arbitrary locations within the US. The data I have to work with looks like this: 
+
+```{r, echo = FALSE}
+stainfo <- read.csv("inst/data/stainfo.csv")
+glimpse(stainfo)
+```
+
+The useable information is containe in the columns `dec_lat_va`, `dec_lon_va`, and `StateCode`. There are services available to lookup timezone given a latitude/longitude pair (e.g. [here](http://www.geonames.org/export/web-services.html), [here](https://developers.google.com/maps/documentation/timezone/intro#Introduction), and [here](https://timezonedb.com/api)), but I'd rather not rely on these. My limited experience has shown them to be slow--only processing one location per request--and anyway I'd prefer to keep this project as self-contained as possible. 
+
+To minimize the number of API calls I'll rely as much as I can on the statecode, and use a simple lookup table, scraped from Wikipedia using the **rvest** package.
+
+
+This will require a function I've often found handy when splitting strings:
+
+```{r}
+
+# First, a handy function for vectorized splitting of strings
+splitPiece <- function (strvec, split, piece, ...) 
+{
+    spl <- strsplit(strvec, split = split, ...)
+    out <- vapply(spl, `[`, character(1), piece)
+    out
+}
+
+# Now get that table
+library(rvest)
+library(dplyr)
+url <- "https://en.wikipedia.org/wiki/List_of_time_offsets_by_U.S._state"
+tzTable <- url %>% 
+  read_html(encoding = "UTF-8") %>% 
+  html_nodes(xpath = '//*[@id="mw-content-text"]/table[1]') %>% 
+  html_table() %>% 
+  `[[`(1) %>% 
+  setNames(make.names(names(.))) %>% 
+  mutate(Time.Offsets = gsub("âˆ’", "-", Time.Offsets),
+         singleOffset = ifelse(grepl("\n", Time.Offsets), NA, 
+                               markstats::splitPiece(Time.Offsets, " ", 1)))
+glimpse(tzTable)
+```
+
+Now I'll make a table to replace offsets with Olson names (not technically an exact mapping, as Olson names reflect more nuance than offset, but this is a necessary approximation.)
+
+```{r}
+unique(tzTable$Time.Offsets)
+
+olsonTbl <- data.frame(offset = sprintf("UTC%03+d:00", c(-10:-5)), 
+                       olson = c("Pacific/Honolulu", "America/Anchorage",
+                                       "America/Los_Angeles", "America/Denver", 
+                                       "America/Chicago", "America/New_York"),
+                       stringsAsFactors = FALSE)
+
+kable(olsonTbl)
+```
+
+I'll also need a table of FIPS state codes, since that's how state info is given in the siteInfo table. Once again I'll use rvest and Wikipedia:
+
+```{r}
+library(xml2)
+library(rvest)
+
+scUrl <- "https://en.wikipedia.org/wiki/Federal_Information_Processing_Standard_state_code"
+
+scTable <- scUrl %>% 
+  read_html(encoding = "UTF-8") %>% 
+  html_nodes(xpath = '//*[@id="mw-content-text"]/table[1]') %>% 
+  html_table() %>% 
+  `[[`(1) %>% 
+  setNames(make.names(names(.))) #%>% 
+  # mutate(Time.Offsets = gsub("âˆ’", "-", Time.Offsets))
+
+glimpse(scTable)
+```
+
+
+The workflow is then: 
+
+1. Lookup state name using state code
+2. Lookup offset using state name
+3. Lookup Olson name using offset
+
+
+
+```{r}
+stateNames <- scTable$Name[match(stainfo$StateCode, scTable$Numeric.code)] %>% 
+  gsub("District of Columbia", "Washington, D.C.", .)
+stateOffsets <- tzTable$singleOffset[match(stateNames, tzTable$State)]
+
+stateOlson <- olsonTbl$olson[match(stateOffsets, olsonTbl$offset)]
+
+```
+
+Now put this into a function. 
+
+
+```{r, eval = FALSE}
+geonamesTZ <- function(lat, lon, geonamesUser) {
+  
+  force(geonamesUser)
+  
+  oneTZ <- function(lat, lon) {
+    url <- sprintf("http://api.geonames.org/timezoneJSON?lat=%s&lng=%s&radius=10&username=%s",
+                   lat, lon, geonamesUser)
+    res <- GET(url)
+    stop_for_status(res)
+  
+    out <- fromJSON(content(res, as = "text", encoding = "UTF-8"))$timezoneID
+    if (is.null(out))
+      stop("No timezone recognized for location.")
+    out
+  }
+  
+  out <- Map(oneTZ, lat = lat, lon = lon)
+  out
+}
+
+
+lookupTZ <- function(lat, lon, statecode, geonamesUser = "markwh") {
+  data(scTable)
+  data(tzTable)
+  data(olsonTbl)
+  
+  state <- scTable$Name[match(statecode, scTable$Numeric.code)]
+  state <- gsub("District of Columbia", "Washington, D.C.", state)
+  stateOffsets <- tzTable$singleOffset[match(state, tzTable$State)]
+  stateOlson <- olsonTbl$olson[match(stateOffsets, olsonTbl$offset)]
+  
+  if (sum(is.na(stateOlson)) > 0) {
+    nas <- is.na(stateOlson)
+    stateOlson[nas] <- geonamesTZ(lat = lat, lon = lon, 
+                                  geonamesUser = geonamesUser)
+  }
+  
+  stateOlson
+}
+
+```
+
+Try it out!
+
+```{r}
+lookupTZ(lat = 43, lon = -73, statecode = 1:50)
+```

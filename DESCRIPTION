@@ -1,0 +1,17 @@
+Package: wqp
+Type: Package
+Title: retrieve and process data from the water quality portal
+Version: 0.0.0.9000
+Date: 2017-03-03
+Authors@R: person("Mark", "Hagemann", email = "mark.hagemann@gmail.com", role = c("aut", "cre"))
+Maintainer: Mark Hagemann <mark.hagemann@gmail.com>
+Description: Migrated from the rcmodel package. Contains functions to obtain 
+  and process data from the NWQMC water quality portal (WQP). 
+License: GPL-3
+LazyData: TRUE
+RoxygenNote: 5.0.1
+VignetteBuilder: knitr
+Suggests: testthat
+Imports: assertthat,
+    dplyr,
+    httr
